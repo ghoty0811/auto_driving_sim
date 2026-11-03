@@ -1,0 +1,27 @@
+# ROS 2 / colcon generated files
+/build/
+/install/
+/log/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+# Local editor, agent and credential settings
+.vscode/
+.idea/
+.agents/
+.codex/
+.aws/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+# Recordings and generated publication bundles
+*.db3
+*.mcap
+/dist/
+~$*
+.DS_Store

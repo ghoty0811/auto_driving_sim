@@ -1,0 +1,427 @@
+import time
+
+import cv2
+from cv_bridge import CvBridge
+from cv_bridge import CvBridgeError
+import numpy as np
+from rcl_interfaces.msg import IntegerRange
+from rcl_interfaces.msg import ParameterDescriptor
+from rcl_interfaces.msg import SetParametersResult
+import rclpy
+from rclpy.node import Node
+from sensor_msgs.msg import CompressedImage
+from sensor_msgs.msg import Image
+from std_msgs.msg import UInt8
+
+
+class DetectTrafficLight(Node):
+
+    def __init__(self):
+        super().__init__('detect_traffic_light')
+        parameter_descriptor_hue = ParameterDescriptor(
+            integer_range=[IntegerRange(from_value=0, to_value=179, step=1)],
+            description='Hue Value (0~179)'
+        )
+        parameter_descriptor_saturation_lightness = ParameterDescriptor(
+            integer_range=[IntegerRange(from_value=0, to_value=255, step=1)],
+            description='Saturation/Lightness Value (0~255)'
+        )
+
+        self.declare_parameter(
+            'red.hue_l', 0, parameter_descriptor_hue)
+        self.declare_parameter(
+            'red.hue_h', 179, parameter_descriptor_hue)
+        self.declare_parameter(
+            'red.saturation_l', 0, parameter_descriptor_saturation_lightness)
+        self.declare_parameter(
+            'red.saturation_h', 255, parameter_descriptor_saturation_lightness)
+        self.declare_parameter(
+            'red.lightness_l', 0, parameter_descriptor_saturation_lightness)
+        self.declare_parameter(
+            'red.lightness_h', 255, parameter_descriptor_saturation_lightness)
+
+        self.declare_parameter(
+            'yellow.hue_l', 0, parameter_descriptor_hue)
+        self.declare_parameter(
+            'yellow.hue_h', 179, parameter_descriptor_hue)
+        self.declare_parameter(
+            'yellow.saturation_l', 0, parameter_descriptor_saturation_lightness)
+        self.declare_parameter(
+            'yellow.saturation_h', 255, parameter_descriptor_saturation_lightness)
+        self.declare_parameter(
+            'yellow.lightness_l', 0, parameter_descriptor_saturation_lightness)
+        self.declare_parameter(
+            'yellow.lightness_h', 255, parameter_descriptor_saturation_lightness)
+
+        self.declare_parameter(
+            'green.hue_l', 0, parameter_descriptor_hue)
+        self.declare_parameter(
+            'green.hue_h', 179, parameter_descriptor_hue)
+        self.declare_parameter(
+            'green.saturation_l', 0, parameter_descriptor_saturation_lightness)
+        self.declare_parameter(
+            'green.saturation_h', 255, parameter_descriptor_saturation_lightness)
+        self.declare_parameter(
+            'green.lightness_l', 0, parameter_descriptor_saturation_lightness)
+        self.declare_parameter(
+            'green.lightness_h', 255, parameter_descriptor_saturation_lightness)
+
+        self.declare_parameter('is_calibration_mode', False)
+
+        self.hue_red_l = self.get_parameter(
+            'red.hue_l').get_parameter_value().integer_value
+        self.hue_red_h = self.get_parameter(
+            'red.hue_h').get_parameter_value().integer_value
+        self.saturation_red_l = self.get_parameter(
+            'red.saturation_l').get_parameter_value().integer_value
+        self.saturation_red_h = self.get_parameter(
+            'red.saturation_h').get_parameter_value().integer_value
+        self.lightness_red_l = self.get_parameter(
+            'red.lightness_l').get_parameter_value().integer_value
+        self.lightness_red_h = self.get_parameter(
+            'red.lightness_h').get_parameter_value().integer_value
+
+        self.hue_yellow_l = self.get_parameter(
+            'yellow.hue_l').get_parameter_value().integer_value
+        self.hue_yellow_h = self.get_parameter(
+            'yellow.hue_h').get_parameter_value().integer_value
+        self.saturation_yellow_l = self.get_parameter(
+            'yellow.saturation_l').get_parameter_value().integer_value
+        self.saturation_yellow_h = self.get_parameter(
+            'yellow.saturation_h').get_parameter_value().integer_value
+        self.lightness_yellow_l = self.get_parameter(
+            'yellow.lightness_l').get_parameter_value().integer_value
+        self.lightness_yellow_h = self.get_parameter(
+            'yellow.lightness_h').get_parameter_value().integer_value
+
+        self.hue_green_l = self.get_parameter(
+            'green.hue_l').get_parameter_value().integer_value
+        self.hue_green_h = self.get_parameter(
+            'green.hue_h').get_parameter_value().integer_value
+        self.saturation_green_l = self.get_parameter(
+            'green.saturation_l').get_parameter_value().integer_value
+        self.saturation_green_h = self.get_parameter(
+            'green.saturation_h').get_parameter_value().integer_value
+        self.lightness_green_l = self.get_parameter(
+            'green.lightness_l').get_parameter_value().integer_value
+        self.lightness_green_h = self.get_parameter(
+            'green.lightness_h').get_parameter_value().integer_value
+
+        self.is_calibration_mode = self.get_parameter(
+            'is_calibration_mode').get_parameter_value().bool_value
+        if self.is_calibration_mode:
+            self.add_on_set_parameters_callback(self.get_detect_traffic_light_param)
+
+        self.sub_image_type = 'compressed'
+        self.pub_image_type = 'compressed'
+
+        self.counter = 1
+
+        if self.sub_image_type == 'compressed':
+            self.sub_image_original = self.create_subscription(
+                CompressedImage, '/detect/image_input/compressed', self.get_image, 1)
+        else:
+            self.sub_image_original = self.create_subscription(
+                Image, '/detect/image_input', self.get_image, 1)
+
+        if self.pub_image_type == 'compressed':
+            self.pub_image_traffic_light = self.create_publisher(
+                CompressedImage, '/detect/image_output/compressed', 1)
+        else:
+            self.pub_image_traffic_light = self.create_publisher(
+                Image, '/detect/image_output', 1)
+
+        if self.is_calibration_mode:
+            if self.pub_image_type == 'compressed':
+                self.pub_image_red_light = self.create_publisher(
+                    CompressedImage, '/detect/image_output_sub1/compressed', 1)
+                self.pub_image_yellow_light = self.create_publisher(
+                    CompressedImage, '/detect/image_output_sub2/compressed', 1)
+                self.pub_image_green_light = self.create_publisher(
+                    CompressedImage, '/detect/image_output_sub3/compressed', 1)
+            else:
+                self.pub_image_red_light = self.create_publisher(
+                    Image, '/detect/image_output_sub1', 1)
+                self.pub_image_yellow_light = self.create_publisher(
+                    Image, '/detect/image_output_sub2', 1)
+                self.pub_image_green_light = self.create_publisher(
+                    Image, '/detect/image_output_sub3', 1)
+
+        self.cvBridge = CvBridge()
+        self.cv_image = None
+
+        self.is_image_available = False
+        self.is_traffic_light_finished = False
+
+        self.status = 0
+        self.green_count = 0
+        self.yellow_count = 0
+        self.red_count = 0
+        self.stop_count = 0
+        self.off_traffic = False
+
+        time.sleep(1)
+        self.timer = self.create_timer(0.1, self.timer_callback)
+        
+        self.pub_traffic_light = self.create_publisher(UInt8, '/detect/traffic_light', 10)
+        self.traffic_msg = UInt8()
+        
+        self.is_calibration_mode = True
+        
+
+    def get_detect_traffic_light_param(self, params):
+        for param in params:
+            if param.name == 'red.hue_l':
+                self.hue_red_l = param.value
+                self.get_logger().info(f'red.hue_l set to: {param.value}')
+            elif param.name == 'red.hue_h':
+                self.hue_red_h = param.value
+                self.get_logger().info(f'red.hue_h set to: {param.value}')
+            elif param.name == 'red.saturation_l':
+                self.saturation_red_l = param.value
+                self.get_logger().info(f'red.saturation_l set to: {param.value}')
+            elif param.name == 'red.saturation_h':
+                self.saturation_red_h = param.value
+                self.get_logger().info(f'red.saturation_h set to: {param.value}')
+            elif param.name == 'red.lightness_l':
+                self.lightness_red_l = param.value
+                self.get_logger().info(f'red.lightness_l set to: {param.value}')
+            elif param.name == 'red.lightness_h':
+                self.lightness_red_h = param.value
+                self.get_logger().info(f'red.lightness_h set to: {param.value}')
+            elif param.name == 'yellow.hue_l':
+                self.hue_yellow_l = param.value
+                self.get_logger().info(f'yellow.hue_l set to: {param.value}')
+            elif param.name == 'yellow.hue_h':
+                self.hue_yellow_h = param.value
+                self.get_logger().info(f'yellow.hue_h set to: {param.value}')
+            elif param.name == 'yellow.saturation_l':
+                self.saturation_yellow_l = param.value
+                self.get_logger().info(f'yellow.saturation_l set to: {param.value}')
+            elif param.name == 'yellow.saturation_h':
+                self.saturation_yellow_h = param.value
+                self.get_logger().info(f'yellow.saturation_h set to: {param.value}')
+            elif param.name == 'yellow.lightness_l':
+                self.lightness_yellow_l = param.value
+                self.get_logger().info(f'yellow.lightness_l set to: {param.value}')
+            elif param.name == 'yellow.lightness_h':
+                self.lightness_yellow_h = param.value
+                self.get_logger().info(f'yellow.lightness_h set to: {param.value}')
+            elif param.name == 'green.hue_l':
+                self.hue_green_l = param.value
+                self.get_logger().info(f'green.hue_l set to: {param.value}')
+            elif param.name == 'green.hue_h':
+                self.hue_green_h = param.value
+                self.get_logger().info(f'green.hue_h set to: {param.value}')
+            elif param.name == 'green.saturation_l':
+                self.saturation_green_l = param.value
+                self.get_logger().info(f'green.saturation_l set to: {param.value}')
+            elif param.name == 'green.saturation_h':
+                self.saturation_green_h = param.value
+                self.get_logger().info(f'green.saturation_h set to: {param.value}')
+            elif param.name == 'green.lightness_l':
+                self.lightness_green_l = param.value
+                self.get_logger().info(f'green.lightness_l set to: {param.value}')
+            elif param.name == 'green.lightness_h':
+                self.lightness_green_h = param.value
+                self.get_logger().info(f'green.lightness_h set to: {param.value}')
+        return SetParametersResult(successful=True)
+
+    def get_image(self, image_msg):
+        if self.counter % 3 != 0:
+            self.counter += 1
+            return
+        else:
+            self.counter = 1
+
+        if self.sub_image_type == 'compressed':
+            np_arr = np.frombuffer(image_msg.data, np.uint8)
+            self.cv_image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+        else:
+            try:
+                self.cv_image = self.cvBridge.imgmsg_to_cv2(image_msg, 'bgr8')
+            except CvBridgeError as e:
+                self.get_logger().error(f'CvBridge Error: {e}')
+                return
+
+        self.is_image_available = True
+
+    def timer_callback(self):
+        if self.is_image_available:
+            self.find_traffic_light()
+
+    def find_traffic_light(self):
+        
+        cv_image_mask_red = self.mask_red_traffic_light()
+        cv_image_mask_red = cv2.GaussianBlur(cv_image_mask_red, (5, 5), 0)
+        
+        cv_image_mask_yellow = self.mask_yellow_traffic_light()
+        cv_image_mask_yellow = cv2.GaussianBlur(cv_image_mask_yellow, (5, 5), 0)
+        
+        cv_image_mask_green = self.mask_green_traffic_light()
+        cv_image_mask_green = cv2.GaussianBlur(cv_image_mask_green, (5, 5), 0)
+
+        color_detected = None
+
+        if self.find_circle_of_traffic_light(cv_image_mask_red, 'red'):
+            color_detected = 'red'
+        elif self.find_circle_of_traffic_light(cv_image_mask_yellow, 'yellow'):
+            color_detected = 'yellow'
+        elif self.find_circle_of_traffic_light(cv_image_mask_green, 'green'):
+            color_detected = 'green'
+
+        if color_detected == 'red':
+            cv2.putText(self.cv_image, 'RED', (self.point_x, self.point_y),
+                        cv2.FONT_HERSHEY_DUPLEX, 0.5, (0, 0, 255))
+            self.publish_red_light()
+        elif color_detected == 'yellow':
+            cv2.putText(self.cv_image, 'YELLOW', (self.point_x, self.point_y),
+                        cv2.FONT_HERSHEY_DUPLEX, 0.5, (0, 255, 255))
+            self.publish_yellow_light()
+        elif color_detected == 'green':
+            cv2.putText(self.cv_image, 'GREEN', (self.point_x, self.point_y),
+                        cv2.FONT_HERSHEY_DUPLEX, 0.5, (0, 255, 0))
+            self.publish_green_light()
+        
+        if self.pub_image_type == 'compressed':
+            self.pub_image_traffic_light.publish(
+                self.cvBridge.cv2_to_compressed_imgmsg(self.cv_image, 'jpg'))
+        else:
+            self.pub_image_traffic_light.publish(
+                self.cvBridge.cv2_to_imgmsg(self.cv_image, 'bgr8'))
+            
+        if color_detected is None:
+            self.get_logger().info("⚪ No traffic light detected. Publishing green (0).")
+            self.publish_green_light()
+
+
+    def mask_red_traffic_light(self):
+        
+        image = np.copy(self.cv_image)
+        hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+
+        lower_red = np.array([self.hue_red_l, self.saturation_red_l, self.lightness_red_l])
+        upper_red = np.array([self.hue_red_h, self.saturation_red_h, self.lightness_red_h])
+
+        mask = cv2.inRange(hsv, lower_red, upper_red)
+
+        if self.is_calibration_mode:
+            if self.pub_image_type == 'compressed':
+                self.pub_image_red_light.publish(
+                    self.cvBridge.cv2_to_compressed_imgmsg(mask, 'jpg'))
+            else:
+                self.pub_image_red_light.publish(
+                    self.cvBridge.cv2_to_imgmsg(mask, 'mono8'))
+
+        return mask
+
+    def mask_yellow_traffic_light(self):
+        image = np.copy(self.cv_image)
+        hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+
+        lower_yellow = np.array(
+            [self.hue_yellow_l, self.saturation_yellow_l, self.lightness_yellow_l]
+            )
+        upper_yellow = np.array(
+            [self.hue_yellow_h, self.saturation_yellow_h, self.lightness_yellow_h]
+            )
+
+        mask = cv2.inRange(hsv, lower_yellow, upper_yellow)
+
+        if self.is_calibration_mode:
+            if self.pub_image_type == 'compressed':
+                self.pub_image_yellow_light.publish(
+                    self.cvBridge.cv2_to_compressed_imgmsg(mask, 'jpg'))
+            else:
+                self.pub_image_yellow_light.publish(
+                    self.cvBridge.cv2_to_imgmsg(mask, 'mono8'))
+
+        return mask
+
+    def mask_green_traffic_light(self):
+        image = np.copy(self.cv_image)
+        hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+
+        lower_green = np.array([self.hue_green_l, self.saturation_green_l, self.lightness_green_l])
+        upper_green = np.array([self.hue_green_h, self.saturation_green_h, self.lightness_green_h])
+
+        mask = cv2.inRange(hsv, lower_green, upper_green)
+
+        if self.is_calibration_mode:
+            if self.pub_image_type == 'compressed':
+                self.pub_image_green_light.publish(
+                    self.cvBridge.cv2_to_compressed_imgmsg(mask, 'jpg'))
+            else:
+                self.pub_image_green_light.publish(
+                    self.cvBridge.cv2_to_imgmsg(mask, 'mono8'))
+        return mask
+
+    def find_circle_of_traffic_light(self, mask, color):
+        detect_result = False
+        
+        params = cv2.SimpleBlobDetector_Params()
+        params.minThreshold = 10
+        params.maxThreshold = 255
+        params.filterByArea = True
+        params.minArea = 1
+        params.maxArea = 4000   
+        params.filterByColor = True
+        params.blobColor = 255
+        params.filterByCircularity = False
+        params.filterByConvexity = False
+        params.filterByInertia = False
+   
+        detector = cv2.SimpleBlobDetector_create(params)
+        keypts = detector.detect(mask)
+        
+        height, width = mask.shape[:2]
+        roi_x_start = width // 2
+        roi_x_end = width
+        if color == 'red':
+            roi_y_start = 0
+            roi_y_end = height // 2 
+        elif color == 'yellow':
+            roi_y_start = height // 3
+            roi_y_end = 2 * height // 3
+        elif color == 'green':
+            roi_y_start = int(height * 0.1)
+            roi_y_end = int(height * 0.5)  
+
+        for i in range(len(keypts)):
+            self.point_x = int(keypts[i].pt[0])
+            self.point_y = int(keypts[i].pt[1])
+            if roi_x_start < self.point_x < roi_x_end and roi_y_start < self.point_y < roi_y_end:
+                self.get_logger().info(f"[{color}] keypoint in ROI at ({self.point_x}, {self.point_y})")
+                detect_result = True
+                self.get_logger().info(f'{color} light detected')
+                break
+        for k in keypts:
+            x, y = int(k.pt[0]), int(k.pt[1])
+            size = int(k.size / 2)
+            cv2.circle(self.cv_image, (x, y), size, (255, 0, 255), 2)
+            self.get_logger().info(f'!!!!!!!!! Blob candidate at ({x}, {y}), size: {k.size}')
+        return detect_result
+    
+    def publish_red_light(self):
+        self.traffic_msg.data = 255
+        self.pub_traffic_light.publish(self.traffic_msg)
+
+    def publish_yellow_light(self):
+        self.traffic_msg.data = 128
+        self.pub_traffic_light.publish(self.traffic_msg)
+
+    def publish_green_light(self):
+        self.traffic_msg.data = 0
+        self.pub_traffic_light.publish(self.traffic_msg)
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = DetectTrafficLight()
+    rclpy.spin(node)
+    node.destroy_node()
+    rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main() 
